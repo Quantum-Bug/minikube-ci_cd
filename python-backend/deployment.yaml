@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: python-backend
+  namespace: apps
+  labels:
+    app: python-backend
+    tier: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: python-backend
+  template:
+    metadata:
+      labels:
+        app: python-backend
+        tier: backend
+    spec:
+      containers:
+        - name: python-backend
+          image: python-backend:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 5000

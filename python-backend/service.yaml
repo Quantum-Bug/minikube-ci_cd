@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: python-backend
+  namespace: apps
+  labels:
+    app: python-backend
+spec:
+  selector:
+    app: python-backend
+  ports:
+    - port: 5000
+      targetPort: 5000
+  type: ClusterIP

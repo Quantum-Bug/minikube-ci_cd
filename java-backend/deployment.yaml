@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: java-backend
+  namespace: apps
+  labels:
+    app: java-backend
+    tier: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: java-backend
+  template:
+    metadata:
+      labels:
+        app: java-backend
+        tier: backend
+    spec:
+      containers:
+        - name: java-backend
+          image: java-backend:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080

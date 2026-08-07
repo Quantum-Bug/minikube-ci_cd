@@ -1,0 +1,28 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: build-deploy-pipeline
+  namespace: ci-cd
+spec:
+  params:
+    - name: repo-url
+      type: string
+    - name: app-path
+      type: string
+    - name: image-name
+      type: string
+    - name: deployment-name
+      type: string
+  tasks:
+    - name: build-and-deploy
+      taskRef:
+        name: build-and-deploy
+      params:
+        - name: repo-url
+          value: $(params.repo-url)
+        - name: app-path
+          value: $(params.app-path)
+        - name: image-name
+          value: $(params.image-name)
+        - name: deployment-name
+          value: $(params.deployment-name)

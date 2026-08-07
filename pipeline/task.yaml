@@ -1,0 +1,46 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: build-and-deploy
+  namespace: ci-cd
+spec:
+  params:
+    - name: repo-url
+      type: string
+    - name: app-path
+      type: string
+    - name: image-name
+      type: string
+    - name: deployment-name
+      type: string
+  steps:
+    - name: clone
+      image: alpine/git
+      script: |
+        echo "[clone] cloning $(params.repo-url)"
+        git clone $(params.repo-url) /workspace/src
+        echo "[clone] done"
+
+    - name: build
+      image: docker:24-cli
+      volumeMounts:
+        - name: docker-sock
+          mountPath: /var/run/docker.sock
+      script: |
+        echo "[build] building image $(params.image-name):latest"
+        cd /workspace/src/$(params.app-path)
+        docker build -t $(params.image-name):latest .
+        echo "[build] image built successfully"
+
+    - name: restart-deployment
+      image: bitnami/kubectl:latest
+      script: |
+        echo "[deploy] restarting deployment $(params.deployment-name) in apps namespace"
+        kubectl rollout restart deployment/$(params.deployment-name) -n apps || \
+          echo "[deploy] deployment not found yet — ArgoCD will create it, restart will apply on next run"
+        echo "[deploy] step complete"
+
+  volumes:
+    - name: docker-sock
+      hostPath:
+        path: /var/run/docker.sock
