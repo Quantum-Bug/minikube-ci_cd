@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: python-backend
-          image: python-backend:b51a36d-1786172818
+          image: python-backend:d2334f0-1786189536
           imagePullPolicy: Never
           ports:
             - containerPort: 5000
