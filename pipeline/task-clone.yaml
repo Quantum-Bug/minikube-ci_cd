@@ -1,0 +1,18 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: git-clone
+  namespace: ci-cd
+spec:
+  params:
+    - name: repo-url
+      type: string
+  workspaces:
+    - name: source
+  steps:
+    - name: clone
+      image: alpine/git
+      script: |
+        echo "[git-clone] cloning $(params.repo-url)"
+        git clone $(params.repo-url) $(workspaces.source.path)/repo
+        echo "[git-clone] done"

@@ -11,18 +11,45 @@ spec:
       type: string
     - name: image-name
       type: string
-    - name: deployment-name
+    - name: manifest-path
       type: string
+  workspaces:
+    - name: shared-workspace
   tasks:
-    - name: build-and-deploy
+    - name: clone
       taskRef:
-        name: build-and-deploy
+        name: git-clone
+      workspaces:
+        - name: source
+          workspace: shared-workspace
       params:
         - name: repo-url
           value: $(params.repo-url)
+
+    - name: build
+      taskRef:
+        name: build-image
+      runAfter: ["clone"]
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+      params:
         - name: app-path
           value: $(params.app-path)
         - name: image-name
           value: $(params.image-name)
-        - name: deployment-name
-          value: $(params.deployment-name)
+
+    - name: update-manifest
+      taskRef:
+        name: update-manifest
+      runAfter: ["build"]
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+      params:
+        - name: image-name
+          value: $(params.image-name)
+        - name: image-tag
+          value: $(tasks.build.results.image-tag)
+        - name: manifest-path
+          value: $(params.manifest-path)

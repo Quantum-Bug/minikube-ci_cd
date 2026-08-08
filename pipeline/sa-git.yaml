@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tekton-git-sa
+  namespace: ci-cd
+secrets:
+  - name: git-credentials

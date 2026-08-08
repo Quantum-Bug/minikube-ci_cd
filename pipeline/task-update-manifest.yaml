@@ -1,0 +1,50 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: update-manifest
+  namespace: ci-cd
+spec:
+  params:
+    - name: image-name
+      type: string
+    - name: image-tag
+      type: string
+    - name: manifest-path
+      type: string
+  workspaces:
+    - name: source
+  steps:
+    - name: update-and-push
+      image: alpine/git
+      env:
+        - name: GIT_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: git-credentials
+              key: username
+        - name: GIT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: git-credentials
+              key: password
+      script: |
+        cd $(workspaces.source.path)/repo
+        REMOTE_URL=$(git remote get-url origin | sed "s|https://|https://${GIT_USERNAME}:${GIT_PASSWORD}@|")
+        git config user.email "tekton@ci.local"
+        git config user.name "Tekton CI"
+
+        echo "[update-manifest] setting image to $(params.image-name):$(params.image-tag)"
+        sed -i "s|image: $(params.image-name):.*|image: $(params.image-name):$(params.image-tag)|" $(params.manifest-path)/deployment.yaml
+        git add $(params.manifest-path)/deployment.yaml
+        git commit -m "ci: update $(params.image-name) to $(params.image-tag)" || echo "[update-manifest] nothing to commit"
+
+        # retry push with rebase to handle parallel pipeline race conditions
+        for i in 1 2 3 4 5; do
+          if git push "$REMOTE_URL" HEAD:main; then
+            echo "[update-manifest] pushed successfully"
+            break
+          fi
+          echo "[update-manifest] push rejected, pulling latest and retrying ($i/5)"
+          git pull --rebase "$REMOTE_URL" main
+          sleep 2
+        done

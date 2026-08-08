@@ -1,0 +1,34 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: build-image
+  namespace: ci-cd
+spec:
+  params:
+    - name: app-path
+      type: string
+    - name: image-name
+      type: string
+  workspaces:
+    - name: source
+  results:
+    - name: image-tag
+      description: unique tag generated for this build
+  steps:
+    - name: build
+      image: docker:24-cli
+      volumeMounts:
+        - name: docker-sock
+          mountPath: /var/run/docker.sock
+      script: |
+        cd $(workspaces.source.path)/repo
+        TAG=$(git rev-parse --short HEAD)-$(date +%s)
+        echo "[build-image] building $(params.image-name):$TAG"
+        cd $(params.app-path)
+        docker build -t $(params.image-name):$TAG .
+        echo -n "$TAG" > $(results.image-tag.path)
+        echo "[build-image] image built: $(params.image-name):$TAG"
+  volumes:
+    - name: docker-sock
+      hostPath:
+        path: /var/run/docker.sock
