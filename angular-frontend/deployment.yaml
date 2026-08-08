@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: angular-frontend
-          image: angular-frontend:1a97048-1786172992
+          image: angular-frontend:332dbff-1786189753
           imagePullPolicy: Never
           ports:
             - containerPort: 80
