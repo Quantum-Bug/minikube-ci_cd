@@ -1,137 +1,144 @@
-# CI/CD and GitOps Setup on Minikube — Tekton + ArgoCD
+# Minikube CI/CD + GitOps Project
 
-A Minikube-based CI/CD and GitOps workflow deploying three applications — a **Python (Flask) backend**, a **Java (Spring Boot) backend**, and an **Angular frontend (nginx)** — built via an in-cluster **Tekton** pipeline and deployed through **ArgoCD** GitOps automation.
-
-> Full formal write-up, including architecture, troubleshooting, and a live GitOps self-heal demonstration, is available in [`Project_Report`](./CICD_GitOps_Report.pdf).
-
----
+End-to-end CI/CD and GitOps pipeline on Minikube for a 3-tier application (Python backend, Java backend, Angular frontend), using **Tekton** for CI (build) and **ArgoCD** for CD (GitOps deployment).
 
 ## Architecture
 
-```
-Git Repository (source + Dockerfiles + k8s manifests + ArgoCD Application specs)
-        |
-        |-- Tekton Pipeline (namespace: ci-cd)
-        |        git-clone -> build -> image in Minikube's internal Docker daemon
-        |        (imagePullPolicy: Never — no external registry required)
-        |
-        `-- ArgoCD Application (namespace: argocd)
-                 watches <app-name>/ path on `main`
-                 auto-sync + self-heal -> Deployment + Service in namespace: apps
-```
+Git Repo (source code + k8s manifests) — single source of truth
+│
+├── Tekton Pipeline (in-cluster CI)
+│ Task 1: git-clone → clones repo into shared workspace
+│ Task 2: build-image → docker build (via node's docker.sock), tags image with git-sha + timestamp
+│ Task 3: update-manifest → updates image tag in deployment.yaml, commits + pushes to Git
+│
+└── ArgoCD (in-cluster CD / GitOps)
+watches manifests in Git → auto-syncs Deployments/Services to cluster
+sole owner of deployment state (self-heal + prune enabled)
 
-| Component | Namespace | Notes |
+
+**Key design principle:** Tekton never touches the cluster directly. It only builds images and updates Git. ArgoCD is the only component that applies changes to the cluster — clean separation of CI and CD responsibilities.
+
+### Apps deployed (namespace: `apps`)
+| App | Tech | Port |
 |---|---|---|
-| Tekton Pipelines + Dashboard | `tekton-pipelines`, `ci-cd` | Builds all 3 images via one reusable Pipeline |
-| ArgoCD | `argocd` | Auto-sync + self-heal enabled per Application |
-| `python-backend` | `apps` | Flask, port `5000` |
-| `java-backend` | `apps` | Spring Boot, port `8080` |
-| `angular-frontend` | `apps` | nginx, port `80`, exposed via NodePort |
+| python-backend | Flask | 5000 |
+| java-backend | Java `HttpServer` | 8080 |
+| angular-frontend | Angular + nginx | 80 |
 
----
+### Tekton Pipeline (namespace: `ci-cd`)
+- **Pipeline:** `build-deploy-pipeline`
+- **Tasks:** `git-clone` → `build-image` → `update-manifest` (chained via `runAfter`, isolated `volumeClaimTemplate` workspace per run)
+- **Image build:** uses node's Docker daemon directly (`docker.sock` mount) — no external registry needed since Minikube uses the Docker driver
+- **Image tagging:** `<image-name>:<git-short-sha>-<timestamp>` — unique per build, never `latest`, so ArgoCD can detect real changes
+- **Git push (in `update-manifest`):** authenticates via `git-credentials` Secret, retries with `git pull --rebase` on push conflicts (handles parallel pipeline race conditions)
 
-## Repository Layout
+### ArgoCD (namespace: `argocd`)
+- One `Application` per service, each pointing to that app's folder in the repo
+- `syncPolicy.automated`: `prune: true`, `selfHeal: true` — fully automated GitOps
+- `directory.include: "{deployment.yaml,service.yaml}"` set on all apps — restricts ArgoCD to only parse the actual k8s manifests, avoiding parse errors on unrelated files (e.g. `tsconfig.json` in the Angular folder)
 
-```
-python-backend/       Dockerfile, app.py, requirements.txt, deployment.yaml, service.yaml
-java-backend/          Dockerfile, Main.java, deployment.yaml, service.yaml
-angular-frontend/      Dockerfile, angular.json, src/, public/, deployment.yaml, service.yaml
-argocd-apps/           python-backend.yaml, java-backend.yaml, angular-frontend.yaml
-pipeline/              Tekton Pipeline + Task definitions, ServiceAccount
-```
+## Repo structure
 
----
+gitops-project/
+├── python-backend/ # source + Dockerfile + deployment.yaml + service.yaml
+├── java-backend/ # source + Dockerfile + deployment.yaml + service.yaml
+├── angular-frontend/ # source + Dockerfile + deployment.yaml + service.yaml
+├── pipeline/ # Tekton Task/Pipeline/RBAC/ServiceAccount YAMLs
+└── argocd-apps/ # ArgoCD Application definitions (one per service)
 
-## Prerequisites
 
-- Minikube (Docker driver)
-- `kubectl`
-- A GitHub repository (this one) reachable by ArgoCD
+## One-time setup
 
----
-
-## Setup — From a Clean Checkout
-
-### 1. Cluster + namespaces
 ```bash
+# Cluster
 minikube start --cpus=4 --memory=8192 --driver=docker
 minikube addons enable ingress
 kubectl create namespace ci-cd
 kubectl create namespace apps
-eval $(minikube docker-env)
-```
 
-### 2. Install Tekton
-```bash
+# Tekton
 kubectl apply --filename https://storage.googleapis.com/tekton-releases/pipeline/latest/release.yaml
 kubectl apply --filename https://storage.googleapis.com/tekton-releases/dashboard/latest/release.yaml
-kubectl get pods -n tekton-pipelines --watch
-```
 
-### 3. Install ArgoCD
-```bash
+# ArgoCD
 kubectl create namespace argocd
 kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-kubectl get pods -n argocd --watch
 
-# UI access
-kubectl -n argocd port-forward svc/argocd-server 8081:443 &
-kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d; echo
-# open https://localhost:8081  (user: admin)
+# Git credentials for Tekton (needed by update-manifest task to push commits)
+kubectl create secret generic git-credentials \
+  --namespace=ci-cd \
+  --from-literal=username=<your-github-username> \
+  --from-literal=password=<your-github-PAT> \
+  --type=kubernetes.io/basic-auth
+
+# Apply pipeline resources
+kubectl apply -f pipeline/
+
+# Apply ArgoCD applications
+kubectl apply -f argocd-apps/
 ```
 
-### 4. Build all three images (Tekton)
-```bash
-REPO_URL="<this-repo-url>"
+## Triggering a build (CI)
 
-for app in "python-backend python-backend python-backend" \
-           "java-backend java-backend java-backend" \
-           "angular-frontend angular-frontend angular-frontend"; do
-  set -- $app
-  path=$1; image=$2; deploy=$3
-  cat <<EOF | kubectl create -f -
+```bash
+REPO_URL="https://github.com/<your-org>/<your-repo>.git"
+
+cat <<EOF | kubectl create -f -
 apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
-  generateName: build-$path-
+  generateName: build-python-backend-
   namespace: ci-cd
 spec:
   taskRunTemplate:
-    serviceAccountName: tekton-deployer
+    serviceAccountName: tekton-git-sa
   pipelineRef:
     name: build-deploy-pipeline
+  workspaces:
+    - name: shared-workspace
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 1Gi
   params:
     - name: repo-url
       value: "$REPO_URL"
     - name: app-path
-      value: "$path"
+      value: "python-backend"
     - name: image-name
-      value: "$image"
-    - name: deployment-name
-      value: "$deploy"
+      value: "python-backend"
+    - name: manifest-path
+      value: "python-backend"
 EOF
-done
-
-kubectl get pipelineruns -n ci-cd
 ```
 
-### 5. Deploy via ArgoCD (GitOps)
+Repeat with `app-path`/`image-name`/`manifest-path` set to `java-backend` or `angular-frontend` for the other services.
+
+> **Note:** trigger pipelines one at a time when possible. Running all 3 in parallel is supported (retry logic handles Git push races) but is slower than sequential runs.
+
+## Verifying the flow (GitOps proof)
+
 ```bash
-kubectl apply -f argocd-apps/
+# Pipeline status
+kubectl get pipelineruns -n ci-cd
+
+# Confirm Tekton pushed a commit
+git pull && git log --oneline -5
+
+# ArgoCD picked it up
 kubectl get applications -n argocd
 kubectl get pods -n apps
+
+# Confirm the running image is the new unique tag, not "latest"
+kubectl get deployment python-backend -n apps -o jsonpath='{.spec.template.spec.containers[0].image}'
 ```
 
-All three Applications should reach `Synced` / `Healthy`, with one Pod each Running in the `apps` namespace.
-
----
-
-## Verifying the GitOps Loop
-
-The cluster is never touched directly — only Git is. To prove it, scale `python-backend` purely via a commit:
+## Live GitOps self-heal demo
 
 ```bash
-# edit python-backend/deployment.yaml: replicas: 1 -> 2
+# Edit any deployment.yaml manually, e.g. change replicas: 1 -> 2
 git add python-backend/deployment.yaml
 git commit -m "Scale python-backend to 2 replicas"
 git push origin main
@@ -141,49 +148,36 @@ kubectl patch application python-backend -n argocd --type merge \
 
 kubectl get pods -n apps -l app=python-backend --watch
 ```
+No `kubectl apply` was run — ArgoCD detects the Git change and reconciles the cluster automatically.
 
-A second `python-backend` Pod appears automatically within seconds — no `kubectl apply` or `kubectl scale` was run.
+## Logs
 
----
-
-## Everyday Operations
-
+Consistent labels (`app`, `tier`) on every Deployment allow filtering:
 ```bash
-# Status
-kubectl get pipelineruns -n ci-cd
-kubectl get pods -n ci-cd
-kubectl get applications -n argocd
-kubectl get pods -n apps
-
-# Force an immediate sync
-kubectl patch application <app-name> -n argocd --type merge \
-  -p '{"metadata":{"annotations":{"argocd.argoproj.io/refresh":"hard"}}}'
-
-# Logs, filtered by label
 kubectl logs -n apps -l app=python-backend --tail=20
 kubectl logs -n apps -l app=java-backend --tail=20
 kubectl logs -n apps -l app=angular-frontend --tail=20
-
-# Reach the apps
-kubectl port-forward -n apps svc/python-backend 5000:5000 &
-kubectl port-forward -n apps svc/java-backend 8080:8080 &
-minikube service angular-frontend -n apps --url
+```
+Tekton step-level logs (per Task, per pod):
+```bash
+kubectl logs -n ci-cd <pod-name> --all-containers
 ```
 
----
+## Access UIs
 
-## Known Issues & Fixes (see full report for details)
+```bash
+# Tekton Dashboard
+kubectl proxy --port=8080 &
+# http://localhost:8080/api/v1/namespaces/tekton-pipelines/services/tekton-dashboard:http/proxy/
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| `unknown field "spec.serviceAccountName"` on PipelineRun | Tekton v1 moved the field | Use `spec.taskRunTemplate.serviceAccountName` |
-| ArgoCD: `app path does not exist` | `Application.spec.source.path` didn't match actual repo layout | Point `path` at the app's real top-level directory |
-| ArgoCD stuck `Synced` but no Pods | `deployment.yaml`/`service.yaml` were missing from the app directory | Add manifests, commit, push |
-| Angular app stuck `Unknown`: `Failed to unmarshal "tsconfig.app.json"` | ArgoCD tried to parse every JSON/YAML file (incl. TS config) as a manifest | Restrict `spec.source.directory.include` to `{deployment.yaml,service.yaml}` |
-| `DeadlineExceeded` generating manifest | Transient repo-server stall | `kubectl rollout restart deployment argocd-repo-server -n argocd` |
+# ArgoCD UI
+kubectl -n argocd port-forward svc/argocd-server 8081:443 &
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d; echo
+# https://localhost:8081  (user: admin)
+```
 
----
+## Known trade-offs (documented deliberately)
 
-## Security Note
-
-This setup is intended for local development and demonstration only: simple credentials, in-cluster image builds with no external registry, and no TLS. A production deployment would additionally require TLS termination, hardened RBAC, an external container registry, and a secrets-management solution.
+- **Image build via `docker.sock`** instead of Kaniko + external registry — valid for Minikube's Docker driver, avoids registry auth complexity. Production would use Kaniko + a real registry (ECR/GCR/Docker Hub).
+- **`ReadWriteOnce` workspace PVC per PipelineRun** — required because a shared PVC across parallel pipeline runs caused clone conflicts (`destination path already exists`).
+- **Git push race conditions** across parallel builds are handled with a `pull --rebase` + retry loop in the `update-manifest` task. In production, a separate "manifests" repo (decoupled from app source) would reduce contention further.
