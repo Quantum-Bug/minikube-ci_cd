@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: java-backend
-          image: java-backend:latest
+          image: java-backend:1a97048-1786172992
           imagePullPolicy: Never
           ports:
             - containerPort: 8080
