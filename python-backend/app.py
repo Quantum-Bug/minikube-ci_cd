@@ -10,7 +10,7 @@ app = Flask(__name__)
 @app.route("/")
 def home():
     log.info("root endpoint hit")
-    return jsonify(service="python-backend", status="ok")
+    return jsonify(service="python-backend", status="ok", version="demo")
 
 @app.route("/health")
 def health():
