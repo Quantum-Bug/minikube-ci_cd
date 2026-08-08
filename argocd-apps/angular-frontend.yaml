@@ -9,6 +9,8 @@ spec:
     repoURL: https://github.com/Quantum-Bug/minikube-ci_cd.git
     targetRevision: main
     path: angular-frontend
+    directory:
+      include: "{deployment.yaml,service.yaml}"
   destination:
     server: https://kubernetes.default.svc
     namespace: apps
