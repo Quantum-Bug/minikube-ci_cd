@@ -38,13 +38,19 @@ spec:
         git add $(params.manifest-path)/deployment.yaml
         git commit -m "ci: update $(params.image-name) to $(params.image-tag)" || echo "[update-manifest] nothing to commit"
 
-        # retry push with rebase to handle parallel pipeline race conditions
+        PUSHED=false
         for i in 1 2 3 4 5; do
           if git push "$REMOTE_URL" HEAD:main; then
             echo "[update-manifest] pushed successfully"
+            PUSHED=true
             break
           fi
           echo "[update-manifest] push rejected, pulling latest and retrying ($i/5)"
           git pull --rebase "$REMOTE_URL" main
           sleep 2
         done
+
+        if [ "$PUSHED" = false ]; then
+          echo "[update-manifest] ERROR: push failed after 5 retries"
+          exit 1
+        fi
